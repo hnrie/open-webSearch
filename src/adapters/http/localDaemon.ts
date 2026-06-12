@@ -1,10 +1,17 @@
 import express from 'express';
 import http from 'node:http';
-import { AppConfig } from '../../config.js';
 import { OpenWebSearchRuntime } from '../../runtime/runtimeTypes.js';
-import { createErrorEnvelope, createSuccessEnvelope } from '../../cli/protocol.js';
-import { normalizeEngineName, resolveRequestedEngines, SupportedSearchEngine } from '../../core/search/searchEngines.js';
+import { createSuccessEnvelope } from '../../cli/protocol.js';
 import { shutdownLocalPlaywrightBrowserSessions } from '../../utils/playwrightClient.js';
+import {
+    createApiStatusPayload,
+    handleFetchCsdnRequest,
+    handleFetchGithubReadmeRequest,
+    handleFetchJuejinRequest,
+    handleFetchLinuxDoRequest,
+    handleFetchWebRequest,
+    handleSearchRequest
+} from './apiRouteHandlers.js';
 
 export type LocalDaemonOptions = {
     host?: string;
@@ -12,21 +19,7 @@ export type LocalDaemonOptions = {
     version?: string;
 };
 
-export type LocalDaemonStatus = {
-    daemon: 'running';
-    runtime: 'ready';
-    activation: 'active';
-    version: string;
-    capabilities: string[];
-    baseUrl: string;
-    configSummary: {
-        defaultSearchEngine: string;
-        allowedSearchEngines: string[];
-        searchMode: string;
-        useProxy: boolean;
-        fetchWebAllowInsecureTls: boolean;
-    };
-};
+export type LocalDaemonStatus = ReturnType<typeof createApiStatusPayload>;
 
 export type LocalDaemonHandle = {
     host: string;
@@ -40,107 +33,8 @@ export type LocalDaemonHandle = {
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3210;
 
-function getCapabilities(): string[] {
-    return [
-        'search',
-        'fetch-web',
-        'fetch-csdn',
-        'fetch-juejin',
-        'fetch-github-readme',
-        'fetch-linuxdo'
-    ];
-}
-
-function sendError(
-    res: express.Response,
-    statusCode: number,
-    code: string,
-    message: string,
-    options: {
-        retryable?: boolean;
-        details?: Record<string, unknown>;
-        hint?: string | null;
-    } = {}
-): void {
-    res.status(statusCode).json(createErrorEnvelope(code, message, options));
-}
-
-function parseRequestedEngines(runtime: OpenWebSearchRuntime, engines: unknown): SupportedSearchEngine[] {
-    if (engines === undefined) {
-        return [runtime.config.defaultSearchEngine as SupportedSearchEngine];
-    }
-
-    if (!Array.isArray(engines) || engines.some((engine) => typeof engine !== 'string')) {
-        throw new Error('engines must be an array of strings');
-    }
-
-    if (engines.length === 0) {
-        throw new Error('engines must not be empty');
-    }
-
-    const normalized = engines
-        .map((engine) => normalizeEngineName(engine))
-        .filter(Boolean);
-
-    return resolveRequestedEngines(
-        normalized,
-        runtime.config.allowedSearchEngines,
-        runtime.config.defaultSearchEngine
-    ) as SupportedSearchEngine[];
-}
-
-function parseLimit(limit: unknown): number {
-    if (limit === undefined) {
-        return 10;
-    }
-
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 50) {
-        throw new Error('limit must be an integer between 1 and 50');
-    }
-
-    return limit;
-}
-
-function parseSearchMode(searchMode: unknown): AppConfig['searchMode'] | undefined {
-    if (searchMode === undefined) {
-        return undefined;
-    }
-
-    if (searchMode !== 'request' && searchMode !== 'auto' && searchMode !== 'playwright') {
-        throw new Error('searchMode must be one of: request, auto, playwright');
-    }
-
-    return searchMode;
-}
-
-function parseUrl(url: unknown): string {
-    if (typeof url !== 'string' || !url.trim()) {
-        throw new Error('url must be a non-empty string');
-    }
-
-    return url.trim();
-}
-
-function parseMaxChars(maxChars: unknown): number {
-    if (maxChars === undefined) {
-        return 30000;
-    }
-
-    if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars < 1000 || maxChars > 200000) {
-        throw new Error('maxChars must be an integer between 1000 and 200000');
-    }
-
-    return maxChars;
-}
-
-function parseBooleanFlag(value: unknown, name: string): boolean | undefined {
-    if (value === undefined) {
-        return undefined;
-    }
-    if (typeof value !== 'boolean') {
-        throw new Error(`${name} must be a boolean`);
-    }
-    return value;
+async function sendJsonRouteResult(res: express.Response, result: { status: number; body: unknown }): Promise<void> {
+    res.status(result.status).json(result.body);
 }
 
 export async function startLocalDaemon(
@@ -156,20 +50,11 @@ export async function startLocalDaemon(
 
     let baseUrl = '';
 
-    const getStatus = (): LocalDaemonStatus => ({
-        daemon: 'running',
-        runtime: 'ready',
-        activation: 'active',
+    const getStatus = (): LocalDaemonStatus => createApiStatusPayload(runtime, {
         version,
-        capabilities: getCapabilities(),
         baseUrl,
-        configSummary: {
-            defaultSearchEngine: runtime.config.defaultSearchEngine,
-            allowedSearchEngines: runtime.config.allowedSearchEngines,
-            searchMode: runtime.config.searchMode,
-            useProxy: runtime.config.useProxy,
-            fetchWebAllowInsecureTls: runtime.config.fetchWebAllowInsecureTls
-        }
+        deployment: 'local',
+        apiKeyRequired: false
     });
 
     app.get('/health', (_req, res) => {
@@ -183,132 +68,27 @@ export async function startLocalDaemon(
     });
 
     app.post('/search', async (req, res) => {
-        try {
-            const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
-            if (!query) {
-                sendError(
-                    res,
-                    400,
-                    'invalid_request',
-                    'query must be a non-empty string',
-                    { hint: 'Provide a search query and optionally limit and engines.' }
-                );
-                return;
-            }
-
-            const limit = parseLimit(req.body?.limit);
-            const engines = parseRequestedEngines(runtime, req.body?.engines);
-            const searchMode = parseSearchMode(req.body?.searchMode);
-            const result = await runtime.services.search.execute({
-                query,
-                limit,
-                engines,
-                searchMode
-            });
-            res.json(createSuccessEnvelope(result));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const statusCode = message.includes('must') || message.includes('empty') ? 400 : 500;
-            sendError(
-                res,
-                statusCode,
-                statusCode === 400 ? 'invalid_request' : 'engine_error',
-                message,
-                {
-                    hint: statusCode === 400
-                        ? 'Use a non-empty query, a limit between 1 and 50, valid engine names, and an optional searchMode of request/auto/playwright.'
-                        : 'Retry with a different engine or inspect daemon/runtime configuration.'
-                }
-            );
-        }
+        await sendJsonRouteResult(res, await handleSearchRequest(runtime, req.body ?? {}));
     });
 
     app.post('/fetch-web', async (req, res) => {
-        try {
-            const url = parseUrl(req.body?.url);
-            const maxChars = parseMaxChars(req.body?.maxChars);
-            const readability = parseBooleanFlag(req.body?.readability, 'readability');
-            const includeLinks = parseBooleanFlag(req.body?.includeLinks, 'includeLinks');
-            const result = await runtime.services.fetchWeb.execute({ url, maxChars, readability, includeLinks });
-            res.json(createSuccessEnvelope(result));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            sendError(res, 400, 'validation_failed', message, {
-                hint: 'Use a public HTTP(S) URL, keep maxChars within the supported range, and pass readability/includeLinks only as booleans.'
-            });
-        }
+        await sendJsonRouteResult(res, await handleFetchWebRequest(runtime, req.body ?? {}));
     });
 
     app.post('/fetch-github-readme', async (req, res) => {
-        try {
-            const url = parseUrl(req.body?.url);
-            const result = await runtime.services.fetchGithubReadme.execute({ url });
-
-            if (!result) {
-                sendError(res, 404, 'not_found', 'README not found or repository does not exist', {
-                    hint: 'Verify the repository URL and default branch contents.'
-                });
-                return;
-            }
-
-            res.json(createSuccessEnvelope({
-                url,
-                content: result
-            }));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            sendError(res, 400, 'validation_failed', message, {
-                hint: 'Use a valid GitHub repository URL in HTTPS or SSH form.'
-            });
-        }
+        await sendJsonRouteResult(res, await handleFetchGithubReadmeRequest(runtime, req.body ?? {}));
     });
 
     app.post('/fetch-csdn', async (req, res) => {
-        try {
-            const url = parseUrl(req.body?.url);
-            const result = await runtime.services.fetchCsdnArticle.execute({ url });
-            res.json(createSuccessEnvelope({
-                url,
-                content: result.content
-            }));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            sendError(res, 400, 'validation_failed', message, {
-                hint: 'Use a valid blog.csdn.net article URL.'
-            });
-        }
+        await sendJsonRouteResult(res, await handleFetchCsdnRequest(runtime, req.body ?? {}));
     });
 
     app.post('/fetch-juejin', async (req, res) => {
-        try {
-            const url = parseUrl(req.body?.url);
-            const result = await runtime.services.fetchJuejinArticle.execute({ url });
-            res.json(createSuccessEnvelope({
-                url,
-                content: result.content
-            }));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            sendError(res, 400, 'validation_failed', message, {
-                hint: 'Use a valid juejin.cn post URL.'
-            });
-        }
+        await sendJsonRouteResult(res, await handleFetchJuejinRequest(runtime, req.body ?? {}));
     });
 
     app.post('/fetch-linuxdo', async (req, res) => {
-        try {
-            const url = parseUrl(req.body?.url);
-            const result = await runtime.services.fetchLinuxDoArticle.execute({ url });
-            res.json(createSuccessEnvelope({
-                url,
-                content: result.content
-            }));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            sendError(res, 400, 'validation_failed', message, {
-                hint: 'Use a valid linux.do topic JSON URL.'
-            });
-        }
+        await sendJsonRouteResult(res, await handleFetchLinuxDoRequest(runtime, req.body ?? {}));
     });
 
     const server = await new Promise<http.Server>((resolve, reject) => {
@@ -340,13 +120,6 @@ export async function startLocalDaemon(
                 });
             });
 
-            // 修复本地 daemon 结束后浏览器残留的问题：
-            // daemon 原来只关闭 HTTP server，没有显式销毁共享 Playwright 浏览器会话。
-            // 这里在服务停止后同步回收当前进程持有的浏览器实例，确保 Edge 根进程一并退出。
-            // hidden-headed 模式走 forceKill 分支，保证杀死浏览器进程；
-            // 纯 headed 模式由 Playwright 自己 launch，browser.close() 即可结束进程。
-            // 这里做 best-effort 清理：即使浏览器回收失败，也不应让 daemon close() 抛异常，
-            // 否则调用方（测试/自动化）会收到一个跟 HTTP 服务无关的拒绝，使清理流程变脆弱。
             try {
                 await shutdownLocalPlaywrightBrowserSessions();
             } catch (error) {

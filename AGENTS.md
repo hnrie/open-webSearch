@@ -21,3 +21,4 @@
 - Live search and fetch require outbound internet. DuckDuckGo, Brave, Startpage, Baidu, etc. generally work; Bing and some article hosts (CSDN) may return 301/521 without a proxy.
 - When curling the local daemon, bypass shell proxy settings: `curl --noproxy '*' http://127.0.0.1:3210/health`.
 - Browser-enhanced Bing fallback (Playwright) is opt-in and not installed by default; request-only paths work without it.
+- **Serverless deployment** — Vercel (`vercel.json` + `api/index.js`), Netlify (`netlify.toml` + `netlify/functions/handler.ts`), and Cloudflare Workers (`wrangler.toml`) route to `build/serverless/*`. Set `OPEN_WEBSEARCH_API_KEY` and `DEPLOYMENT_MODE=serverless`. See `docs/serverless-deployment.md`.

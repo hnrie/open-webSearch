@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>open-websearch serverless API</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+        line-height: 1.5;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        max-width: 52rem;
+      }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      pre {
+        overflow-x: auto;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        background: rgba(127, 127, 127, 0.12);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>open-websearch serverless API</h1>
+    <p>
+      This deployment exposes the open-websearch MCP server and REST API over HTTPS.
+      Set <code>OPEN_WEBSEARCH_API_KEY</code> in your platform environment and send it as
+      <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-API-Key: &lt;key&gt;</code>.
+    </p>
+    <h2>Endpoints</h2>
+    <ul>
+      <li><code>GET /health</code> — public liveness check</li>
+      <li><code>GET /status</code> — deployment status and capabilities</li>
+      <li><code>POST /search</code> — web search</li>
+      <li><code>POST /fetch-web</code> — fetch public page content</li>
+      <li><code>POST /fetch-github-readme</code> — fetch GitHub README</li>
+      <li><code>POST /fetch-csdn</code>, <code>/fetch-juejin</code>, <code>/fetch-linuxdo</code></li>
+      <li><code>POST /mcp</code> — MCP Streamable HTTP (stateless)</li>
+    </ul>
+    <h2>MCP client example</h2>
+    <pre>{
+  "mcpServers": {
+    "web-search": {
+      "url": "https://your-deployment.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}</pre>
+    <p>See <code>docs/serverless-deployment.md</code> in the repository for full setup instructions.</p>
+  </body>
+</html>

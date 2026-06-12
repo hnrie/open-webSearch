@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "functions": {
+    "api/index.js": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ],
+  "env": {
+    "DEPLOYMENT_MODE": "serverless",
+    "MODE": "http",
+    "ENABLE_CORS": "true",
+    "SEARCH_MODE": "request"
+  }
+}

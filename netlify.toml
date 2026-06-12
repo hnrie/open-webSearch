@@ -1,0 +1,25 @@
+[build]
+  command = "npm run build"
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+  included_files = ["build/**"]
+
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/handler"
+  status = 200
+
+[context.production.environment]
+  DEPLOYMENT_MODE = "serverless"
+  MODE = "http"
+  ENABLE_CORS = "true"
+  SEARCH_MODE = "request"
+
+[context.deploy-preview.environment]
+  DEPLOYMENT_MODE = "serverless"
+  MODE = "http"
+  ENABLE_CORS = "true"
+  SEARCH_MODE = "request"

@@ -448,6 +448,50 @@ Then configure in your MCP client:
 }
 ```
 
+### Serverless Deployment (Vercel, Netlify, Cloudflare Workers)
+
+Host the full MCP server and REST API on serverless platforms with API key protection. This deployment exposes:
+
+- MCP Streamable HTTP at `/mcp` (stateless)
+- REST API at `/search`, `/fetch-web`, `/fetch-github-readme`, `/fetch-csdn`, `/fetch-juejin`, `/fetch-linuxdo`
+- `GET /health` (public) and `GET /status` (authenticated)
+
+Quick start on Vercel:
+
+```bash
+npm run build
+npx vercel deploy --prod
+```
+
+Set these environment variables in your platform dashboard:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPEN_WEBSEARCH_API_KEY` | Yes | Shared secret for API and MCP access |
+| `DEPLOYMENT_MODE` | Recommended | Set to `serverless` |
+| `ENABLE_CORS` | No | Defaults to `true` in deployment templates |
+| `DEFAULT_SEARCH_ENGINE` | No | Same as Docker/local options |
+
+MCP client example:
+
+```json
+{
+  "mcpServers": {
+    "web-search": {
+      "url": "https://your-project.vercel.app/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Serverless notes:
+- Playwright/browser fallback is not available; search runs in `request` mode only.
+- MCP runs in stateless mode (no in-memory sessions across requests).
+- See [docs/serverless-deployment.md](docs/serverless-deployment.md) for Vercel, Netlify, and Cloudflare Workers setup.
+
 ## Usage Guide
 
 The server provides six tools: `search`, `fetchLinuxDoArticle`, `fetchCsdnArticle`, `fetchGithubReadme`, `fetchJuejinArticle`, and `fetchWebContent`.
