@@ -18,7 +18,9 @@ export type ApiStatusPayload = {
         useProxy: boolean;
         fetchWebAllowInsecureTls: boolean;
         playwrightAvailable: boolean;
-        apiKeyRequired: boolean;
+        e2eEncryptionRequired: boolean;
+        e2eAlgorithm?: string;
+        e2eKeyId?: string;
     };
 };
 
@@ -118,7 +120,9 @@ export function createApiStatusPayload(
         version: string;
         baseUrl: string;
         deployment: 'local' | 'serverless';
-        apiKeyRequired: boolean;
+        e2eEncryptionRequired: boolean;
+        e2eAlgorithm?: string;
+        e2eKeyId?: string;
         playwrightAvailable?: boolean;
     }
 ): ApiStatusPayload {
@@ -142,7 +146,9 @@ export function createApiStatusPayload(
             useProxy: runtime.config.useProxy,
             fetchWebAllowInsecureTls: runtime.config.fetchWebAllowInsecureTls,
             playwrightAvailable,
-            apiKeyRequired: options.apiKeyRequired
+            e2eEncryptionRequired: options.e2eEncryptionRequired,
+            e2eAlgorithm: options.e2eAlgorithm,
+            e2eKeyId: options.e2eKeyId
         }
     };
 }

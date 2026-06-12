@@ -2,159 +2,129 @@
 
 Deploy the full open-websearch MCP server and REST API to serverless platforms such as Vercel, Netlify, and Cloudflare Workers.
 
+Security uses **real end-to-end encryption** (X25519 ECDH + AES-256-GCM), not API keys.
+
 ## What you get
 
-Each deployment exposes:
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
+| Endpoint | Method | Encryption | Description |
+|----------|--------|------------|-------------|
 | `/health` | GET | Public | Liveness check |
-| `/status` | GET | API key | Deployment status and capabilities |
-| `/search` | POST | API key | Web search |
-| `/fetch-web` | POST | API key | Fetch public page content |
-| `/fetch-github-readme` | POST | API key | Fetch GitHub README |
-| `/fetch-csdn` | POST | API key | Fetch CSDN article |
-| `/fetch-juejin` | POST | API key | Fetch Juejin article |
-| `/fetch-linuxdo` | POST | API key | Fetch Linux.do topic JSON |
-| `/mcp` | GET/POST/DELETE | API key | MCP Streamable HTTP (stateless) |
+| `/.well-known/open-websearch-e2e` | GET | Public | Server X25519 public key discovery |
+| `/status` | GET | E2E | Deployment status and capabilities |
+| `/search` | POST | E2E | Web search |
+| `/fetch-web` | POST | E2E | Fetch public page content |
+| `/fetch-github-readme` | POST | E2E | Fetch GitHub README |
+| `/fetch-csdn` | POST | E2E | Fetch CSDN article |
+| `/fetch-juejin` | POST | E2E | Fetch Juejin article |
+| `/fetch-linuxdo` | POST | E2E | Fetch Linux.do topic JSON |
+| `/mcp` | GET/POST/DELETE | E2E | MCP Streamable HTTP (stateless) |
 
-The REST routes reuse the same response envelope as the local daemon (`status`, `data`, `error`, `hint`).
+## End-to-end encryption model
 
-## Security
+Based on the [X25519 + AES-256-GCM API pattern](https://blog.vitalvas.com/post/2025/07/27/e2e-encryption-api-x25519-aes/):
 
-Set a strong API key in your platform environment:
+1. Client fetches the server public key from `/.well-known/open-websearch-e2e`
+2. Client generates an ephemeral X25519 keypair per request
+3. Both sides derive the same AES-256-GCM session key via ECDH + HKDF
+4. Request and response bodies travel as encrypted JSON envelopes over HTTPS
+
+Algorithm: `X25519-AES-256-GCM`
+
+Headers:
+
+```http
+X-E2E-Client-Public-Key: <base64 SPKI ephemeral public key>
+X-E2E-Encrypted: 1
+Content-Type: application/open-websearch+e2e
+```
+
+Encrypted envelope:
+
+```json
+{
+  "v": 1,
+  "alg": "X25519-AES-256-GCM",
+  "payload": "<base64 iv + authTag + ciphertext>"
+}
+```
+
+HTTPS is required in production. Plaintext request bodies are rejected when `REQUIRE_E2E_ENCRYPTION=true`.
+
+## Generate server keys
 
 ```bash
-OPEN_WEBSEARCH_API_KEY=replace-with-a-long-random-secret
+npm run build
+open-websearch e2e-keygen
+```
+
+Set the printed private key in your deployment environment:
+
+```bash
+OPEN_WEBSEARCH_E2E_PRIVATE_KEY=<pkcs8-base64-private-key>
 DEPLOYMENT_MODE=serverless
+REQUIRE_E2E_ENCRYPTION=true
 ```
 
-Clients must send the key using either header:
-
-```http
-Authorization: Bearer <OPEN_WEBSEARCH_API_KEY>
-```
-
-or
-
-```http
-X-API-Key: <OPEN_WEBSEARCH_API_KEY>
-```
-
-`GET /health` stays public so load balancers can probe liveness without credentials.
-
-To disable API key enforcement for local experiments only:
-
-```bash
-REQUIRE_API_KEY=false
-```
-
-Do not use `REQUIRE_API_KEY=false` on public production deployments.
-
-## Serverless constraints
-
-- **Playwright is disabled.** Serverless runtimes cannot launch local browsers. `SEARCH_MODE` is forced to `request`.
-- **Stateless MCP.** Each MCP request creates a fresh server instance. Use Streamable HTTP clients that support stateless POST requests.
-- **Timeouts.** Search and fetch latency depends on the target engine and your platform function timeout (for example, 10–60 seconds on Vercel depending on plan).
-- **CORS is enabled** by default through `ENABLE_CORS=true` in the deployment templates.
+Never commit the private key to git.
 
 ## Deploy to Vercel
 
-1. Install the Vercel CLI or connect the repository in the Vercel dashboard.
-2. Set environment variables in the project settings:
-   - `OPEN_WEBSEARCH_API_KEY`
-   - Optional: `DEFAULT_SEARCH_ENGINE`, `USE_PROXY`, `PROXY_URL`, `ALLOWED_SEARCH_ENGINES`
-3. Deploy. The included `vercel.json` builds the project and routes all paths to the serverless handler.
+1. Set `OPEN_WEBSEARCH_E2E_PRIVATE_KEY` in Vercel project settings
+2. Deploy:
 
 ```bash
 npm run build
 npx vercel deploy --prod
 ```
 
-### MCP client configuration (Vercel)
-
-```json
-{
-  "mcpServers": {
-    "web-search": {
-      "url": "https://your-project.vercel.app/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-### REST example (Vercel)
+### Encrypted REST example
 
 ```bash
-curl -X POST https://your-project.vercel.app/search \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"open web search","limit":3,"engines":["duckduckgo"]}'
+npm run build
+node --input-type=module -e "
+import { e2eJsonRequest } from './build/adapters/http/e2eClient.js';
+const result = await e2eJsonRequest('https://your-project.vercel.app', '/search', {
+  body: { query: 'open web search', limit: 3, engines: ['duckduckgo'] }
+});
+console.log(result);
+"
 ```
+
+### MCP over E2E
+
+MCP clients must send encrypted JSON-RPC bodies to `/mcp` with the E2E headers above. For clients that only support local stdio, proxy through `mcp-remote` and terminate TLS at the platform edge.
 
 ## Deploy to Netlify
 
-1. Connect the repository in Netlify or use the Netlify CLI.
-2. Set `OPEN_WEBSEARCH_API_KEY` and any optional runtime variables in site environment settings.
-3. Deploy. `netlify.toml` builds the project and routes all paths to `/.netlify/functions/handler`.
+1. Set `OPEN_WEBSEARCH_E2E_PRIVATE_KEY` in site environment settings
+2. Deploy:
 
 ```bash
 npm run build
 npx netlify deploy --prod
 ```
 
-MCP clients should point to:
+MCP endpoint:
 
 ```text
 https://your-site.netlify.app/mcp
 ```
 
-For clients that only support local stdio transports, proxy through `mcp-remote`:
-
-```json
-{
-  "mcpServers": {
-    "web-search": {
-      "command": "npx",
-      "args": [
-        "mcp-remote@next",
-        "https://your-site.netlify.app/mcp",
-        "--header",
-        "Authorization: Bearer YOUR_API_KEY"
-      ]
-    }
-  }
-}
-```
-
 ## Deploy to Cloudflare Workers
 
-1. Install Wrangler: `npm install -g wrangler`
-2. Build the project: `npm run build`
-3. Set secrets:
-
 ```bash
-wrangler secret put OPEN_WEBSEARCH_API_KEY
-```
-
-4. Deploy:
-
-```bash
+npm run build
+npx wrangler secret put OPEN_WEBSEARCH_E2E_PRIVATE_KEY
 npx wrangler deploy
 ```
-
-The worker entrypoint is `build/serverless/cloudflare.js` (configured in `wrangler.toml`).
 
 ## Environment variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `OPEN_WEBSEARCH_API_KEY` | Yes (production) | empty | Shared secret for API and MCP access |
+| `OPEN_WEBSEARCH_E2E_PRIVATE_KEY` | Yes (production) | empty | Server X25519 PKCS8 private key (base64) |
 | `DEPLOYMENT_MODE` | Recommended | `serverless` in templates | Enables serverless defaults |
-| `REQUIRE_API_KEY` | No | `true` when `DEPLOYMENT_MODE=serverless` | Enforce API key auth |
+| `REQUIRE_E2E_ENCRYPTION` | No | `true` when `DEPLOYMENT_MODE=serverless` | Reject plaintext payloads |
 | `ENABLE_CORS` | No | `true` in templates | Add CORS headers |
 | `CORS_ORIGIN` | No | `*` | Allowed origin for CORS |
 | `DEFAULT_SEARCH_ENGINE` | No | `bing` | Default engine |
@@ -162,25 +132,37 @@ The worker entrypoint is `build/serverless/cloudflare.js` (configured in `wrangl
 | `USE_PROXY` | No | `false` | Enable outbound HTTP proxy |
 | `PROXY_URL` | No | `http://127.0.0.1:7890` | Proxy URL when `USE_PROXY=true` |
 | `SEARCH_MODE` | No | `request` in templates | Forced to `request` in serverless handlers |
-| `FETCH_WEB_INSECURE_TLS` | No | `false` | Disable TLS verification for fetch-web only |
 
-All other variables from the main README still apply where relevant, except Playwright-related settings which are ignored in serverless mode.
+Legacy API key variables (`OPEN_WEBSEARCH_API_KEY`, `REQUIRE_API_KEY`) are no longer used by the serverless adapter.
+
+## Serverless constraints
+
+- Playwright/browser fallback is disabled; search runs in `request` mode only
+- MCP runs in stateless mode (no in-memory sessions across invocations)
+- Subject to platform function timeout limits
 
 ## Local serverless smoke test
 
-After building, you can exercise the fetch handler directly:
-
 ```bash
 npm run build
-OPEN_WEBSEARCH_API_KEY=test-key DEPLOYMENT_MODE=serverless node -e "
+OPEN_WEBSEARCH_E2E_PRIVATE_KEY="$(node -e "import { generateE2EKeyMaterial } from './build/adapters/http/e2eEncryption.js'; console.log(generateE2EKeyMaterial().privateKeyBase64)")" \
+DEPLOYMENT_MODE=serverless \
+node --input-type=module -e "
 import { createServerlessFetchHandler } from './build/adapters/http/serverlessApp.js';
-const handler = createServerlessFetchHandler();
-const response = await handler(new Request('http://localhost/health'));
-console.log(response.status, await response.text());
+import { createE2EClientSession } from './build/adapters/http/e2eClient.js';
+import { buildEncryptedRequestInit, parseEncryptedResponse } from './build/adapters/http/e2eClient.js';
+import { readE2ESecurityOptionsFromEnv } from './build/adapters/http/e2eEncryption.js';
+
+const handler = createServerlessFetchHandler({ e2e: readE2ESecurityOptionsFromEnv() });
+const wellKnown = await handler(new Request('http://localhost/.well-known/open-websearch-e2e'));
+const { data } = await wellKnown.json();
+const session = createE2EClientSession(data.serverPublicKey);
+const response = await handler(new Request('http://localhost/status', buildEncryptedRequestInit(session, 'GET')));
+console.log(await parseEncryptedResponse(session, response));
 "
 ```
 
-Run the automated serverless tests:
+Run automated tests:
 
 ```bash
 npm run test:serverless
@@ -189,29 +171,15 @@ npm run test:serverless
 ## Architecture
 
 ```text
-                 +----------------------+
-                 | Core search/fetch    |
-                 +----------+-----------+
-                            |
-                 +----------v-----------+
-                 | Shared runtime       |
-                 +-----+-----------+----+
-                       |           |
-           +-----------v--+   +----v----------------+
-           | MCP stateless|   | REST API routes     |
-           | /mcp         |   | /search /fetch-*    |
-           +-----------+--+   +----+----------------+
-                       |           |
-                       +-----+-----+
-                             |
-                    +--------v--------+
-                    | API key auth    |
-                    | CORS middleware |
-                    +--------+--------+
-                             |
-              +--------------+--------------+
-              | Vercel | Netlify | Workers  |
-              +--------+---------+----------+
+Client                          Serverless edge (HTTPS)
+  |                                      |
+  |-- GET /.well-known/open-websearch-e2e -> server public key
+  |-- ephemeral X25519 keypair             |
+  |-- ECDH + AES-256-GCM request ---------> decrypt -> MCP/REST core
+  |<--------- encrypted response ---------- encrypt
 ```
 
-The serverless adapter uses the MCP SDK `WebStandardStreamableHTTPServerTransport`, which works on any runtime that supports the Web Fetch API.
+The serverless adapter uses:
+
+- MCP SDK `WebStandardStreamableHTTPServerTransport` for `/mcp`
+- Native Node.js `crypto` X25519 + AES-256-GCM for payload encryption

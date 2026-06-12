@@ -4,7 +4,6 @@ import { createSuccessEnvelope, createErrorEnvelope } from '../../cli/protocol.j
 import { createOpenWebSearchRuntime } from '../../runtime/createRuntime.js';
 import type { OpenWebSearchRuntime } from '../../runtime/runtimeTypes.js';
 import { setupTools } from '../../tools/setupTools.js';
-import { authorizeRequest, readApiAuthOptionsFromEnv, type ApiAuthOptions } from './auth.js';
 import {
     createApiStatusPayload,
     handleFetchCsdnRequest,
@@ -14,16 +13,26 @@ import {
     handleFetchWebRequest,
     handleSearchRequest
 } from './apiRouteHandlers.js';
+import {
+    createWellKnownPayload,
+    E2E_WELL_KNOWN_PATH,
+    readE2ESecurityOptionsFromEnv,
+    type E2ESecurityOptions
+} from './e2eEncryption.js';
+import {
+    decryptRequestBody,
+    encryptJsonResponse,
+    encryptRawResponse,
+    openE2ESession,
+    rebuildRequest,
+    type E2ESessionContext
+} from './e2eTransport.js';
 
 export type ServerlessAppOptions = {
     version?: string;
-    auth?: ApiAuthOptions;
+    e2e?: E2ESecurityOptions;
     runtime?: OpenWebSearchRuntime;
 };
-
-const JSON_HEADERS = {
-    'Content-Type': 'application/json; charset=utf-8'
-} as const;
 
 function normalizePathname(pathname: string): string {
     if (!pathname || pathname === '/') {
@@ -51,8 +60,9 @@ function corsHeaders(request: Request): Record<string, string> {
     return {
         'Access-Control-Allow-Origin': allowOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key, Mcp-Session-Id, MCP-Protocol-Version',
-        'Access-Control-Expose-Headers': 'Mcp-Session-Id',
+        'Access-Control-Allow-Headers': 'Content-Type, X-E2E-Client-Public-Key, X-E2E-Encrypted, Mcp-Session-Id, MCP-Protocol-Version',
+        'Access-Control-Expose-Headers': 'Mcp-Session-Id, X-E2E-Encrypted',
+        'Strict-Transport-Security': 'max-age=63072000; includeSubDomains; preload',
         'Vary': 'Origin'
     };
 }
@@ -70,25 +80,7 @@ function withCors(request: Request, response: Response): Response {
     });
 }
 
-function jsonResponse(request: Request, status: number, body: unknown): Response {
-    return withCors(request, new Response(JSON.stringify(body), {
-        status,
-        headers: JSON_HEADERS
-    }));
-}
-
-function unauthorizedResponse(request: Request, authResult: Extract<ReturnType<typeof authorizeRequest>, { authorized: false }>): Response {
-    return jsonResponse(request, authResult.status, createErrorEnvelope(
-        authResult.status === 401 ? 'unauthorized' : authResult.status === 403 ? 'forbidden' : 'service_unavailable',
-        authResult.message,
-        {
-            hint: 'Provide Authorization: Bearer <OPEN_WEBSEARCH_API_KEY> or X-API-Key: <OPEN_WEBSEARCH_API_KEY>'
-        }
-    ));
-}
-
-function createMcpServer(): McpServer {
-    const runtime = createOpenWebSearchRuntime();
+function createMcpServer(runtime: OpenWebSearchRuntime): McpServer {
     const server = new McpServer({
         name: 'web-search',
         version: '1.2.0'
@@ -97,8 +89,8 @@ function createMcpServer(): McpServer {
     return server;
 }
 
-async function handleMcpRequest(request: Request): Promise<Response> {
-    const server = createMcpServer();
+async function handleMcpRequest(request: Request, runtime: OpenWebSearchRuntime): Promise<Response> {
+    const server = createMcpServer(runtime);
     const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true
@@ -107,8 +99,7 @@ async function handleMcpRequest(request: Request): Promise<Response> {
     await server.connect(transport);
 
     try {
-        const response = await transport.handleRequest(request);
-        return response;
+        return await transport.handleRequest(request);
     } finally {
         await transport.close().catch(() => undefined);
         await server.close().catch(() => undefined);
@@ -131,9 +122,19 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
         : {};
 }
 
+async function respondJson(
+    request: Request,
+    session: E2ESessionContext,
+    status: number,
+    body: unknown
+): Promise<Response> {
+    const response = await encryptJsonResponse(session, status, body);
+    return withCors(request, response);
+}
+
 export function createServerlessFetchHandler(options: ServerlessAppOptions = {}) {
     const version = options.version ?? process.env.npm_package_version ?? 'unknown';
-    const auth = options.auth ?? readApiAuthOptionsFromEnv();
+    const e2e = options.e2e ?? readE2ESecurityOptionsFromEnv();
     const runtime = options.runtime ?? createOpenWebSearchRuntime();
 
     return async function handleServerlessRequest(request: Request): Promise<Response> {
@@ -144,80 +145,125 @@ export function createServerlessFetchHandler(options: ServerlessAppOptions = {})
             return withCors(request, new Response(null, { status: 204 }));
         }
 
-        const publicPaths = new Set(['/health']);
-        if (!publicPaths.has(pathname)) {
-            const authResult = authorizeRequest(request.headers, auth);
-            if (!authResult.authorized) {
-                return unauthorizedResponse(request, authResult);
+        const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+        if (forwardedProto === 'http' && !url.hostname.includes('localhost') && !url.hostname.startsWith('127.0.0.1')) {
+            return respondJson(request, { encrypted: false }, 400, createErrorEnvelope(
+                'insecure_transport',
+                'HTTPS is required for serverless deployments',
+                { hint: 'Connect over https:// and use end-to-end encrypted payloads.' }
+            ));
+        }
+
+        const publicPaths = new Set(['/health', E2E_WELL_KNOWN_PATH]);
+        const sessionResult = publicPaths.has(pathname)
+            ? { encrypted: false } satisfies E2ESessionContext
+            : await openE2ESession(request, e2e.serverKeys, e2e.requireE2E);
+
+        if ('body' in sessionResult) {
+            return respondJson(request, { encrypted: false }, sessionResult.status, sessionResult.body);
+        }
+
+        const session = sessionResult;
+        let effectiveRequest = request;
+
+        try {
+            const decryptedBody = await decryptRequestBody(request, session);
+            if (decryptedBody !== undefined) {
+                effectiveRequest = rebuildRequest(request, decryptedBody);
             }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return respondJson(request, session, 400, createErrorEnvelope(
+                'decryption_failed',
+                message,
+                { hint: 'Ensure the client ephemeral key, encrypted envelope, and server private key match.' }
+            ));
         }
 
         if (pathname === '/health' && request.method === 'GET') {
-            return jsonResponse(request, 200, createSuccessEnvelope({
+            return respondJson(request, { encrypted: false }, 200, createSuccessEnvelope({
                 daemon: 'running',
-                deployment: 'serverless'
+                deployment: 'serverless',
+                transport: 'https'
             }));
+        }
+
+        if (pathname === E2E_WELL_KNOWN_PATH && request.method === 'GET') {
+            if (!e2e.serverKeys) {
+                return respondJson(request, { encrypted: false }, 503, createErrorEnvelope(
+                    'service_unavailable',
+                    'E2E encryption keys are not configured on this deployment',
+                    { hint: 'Run `open-websearch e2e-keygen` and set OPEN_WEBSEARCH_E2E_PRIVATE_KEY.' }
+                ));
+            }
+
+            return respondJson(request, { encrypted: false }, 200, createSuccessEnvelope(
+                createWellKnownPayload(e2e.serverKeys)
+            ));
         }
 
         if (pathname === '/status' && request.method === 'GET') {
             const baseUrl = getRequestOrigin(request);
-            return jsonResponse(request, 200, createSuccessEnvelope(
+            return respondJson(request, session, 200, createSuccessEnvelope(
                 createApiStatusPayload(runtime, {
                     version,
                     baseUrl,
                     deployment: 'serverless',
-                    apiKeyRequired: auth.requireApiKey,
+                    e2eEncryptionRequired: e2e.requireE2E,
+                    e2eAlgorithm: e2e.serverKeys ? 'X25519-AES-256-GCM' : undefined,
+                    e2eKeyId: e2e.serverKeys?.keyId,
                     playwrightAvailable: false
                 })
             ));
         }
 
-        if (pathname === '/search' && request.method === 'POST') {
-            const body = await readJsonBody(request);
+        if (pathname === '/search' && effectiveRequest.method === 'POST') {
+            const body = await readJsonBody(effectiveRequest);
             const result = await handleSearchRequest(runtime, body, { forceRequestMode: true });
-            return jsonResponse(request, result.status, result.body);
+            return respondJson(request, session, result.status, result.body);
         }
 
-        if (pathname === '/fetch-web' && request.method === 'POST') {
-            const body = await readJsonBody(request);
+        if (pathname === '/fetch-web' && effectiveRequest.method === 'POST') {
+            const body = await readJsonBody(effectiveRequest);
             const result = await handleFetchWebRequest(runtime, body);
-            return jsonResponse(request, result.status, result.body);
+            return respondJson(request, session, result.status, result.body);
         }
 
-        if (pathname === '/fetch-github-readme' && request.method === 'POST') {
-            const body = await readJsonBody(request);
+        if (pathname === '/fetch-github-readme' && effectiveRequest.method === 'POST') {
+            const body = await readJsonBody(effectiveRequest);
             const result = await handleFetchGithubReadmeRequest(runtime, body);
-            return jsonResponse(request, result.status, result.body);
+            return respondJson(request, session, result.status, result.body);
         }
 
-        if (pathname === '/fetch-csdn' && request.method === 'POST') {
-            const body = await readJsonBody(request);
+        if (pathname === '/fetch-csdn' && effectiveRequest.method === 'POST') {
+            const body = await readJsonBody(effectiveRequest);
             const result = await handleFetchCsdnRequest(runtime, body);
-            return jsonResponse(request, result.status, result.body);
+            return respondJson(request, session, result.status, result.body);
         }
 
-        if (pathname === '/fetch-juejin' && request.method === 'POST') {
-            const body = await readJsonBody(request);
+        if (pathname === '/fetch-juejin' && effectiveRequest.method === 'POST') {
+            const body = await readJsonBody(effectiveRequest);
             const result = await handleFetchJuejinRequest(runtime, body);
-            return jsonResponse(request, result.status, result.body);
+            return respondJson(request, session, result.status, result.body);
         }
 
-        if (pathname === '/fetch-linuxdo' && request.method === 'POST') {
-            const body = await readJsonBody(request);
+        if (pathname === '/fetch-linuxdo' && effectiveRequest.method === 'POST') {
+            const body = await readJsonBody(effectiveRequest);
             const result = await handleFetchLinuxDoRequest(runtime, body);
-            return jsonResponse(request, result.status, result.body);
+            return respondJson(request, session, result.status, result.body);
         }
 
-        if (pathname === '/mcp' && (request.method === 'POST' || request.method === 'GET' || request.method === 'DELETE')) {
-            const response = await handleMcpRequest(request);
-            return withCors(request, response);
+        if (pathname === '/mcp' && (effectiveRequest.method === 'POST' || effectiveRequest.method === 'GET' || effectiveRequest.method === 'DELETE')) {
+            const response = await handleMcpRequest(effectiveRequest, runtime);
+            const encrypted = await encryptRawResponse(session, response);
+            return withCors(request, encrypted);
         }
 
-        return jsonResponse(request, 404, createErrorEnvelope(
+        return respondJson(request, session, 404, createErrorEnvelope(
             'not_found',
             `No route for ${request.method} ${pathname}`,
             {
-                hint: 'Use /health, /status, /search, /fetch-*, or /mcp'
+                hint: 'Use /health, /.well-known/open-websearch-e2e, /status, /search, /fetch-*, or /mcp with E2E encryption.'
             }
         ));
     };

@@ -49,6 +49,8 @@ function formatCliHelp(): string {
         '    Start the local daemon in the foreground.',
         '  open-websearch status [--base-url URL] [--json]',
         '    Check daemon status. `status` uses --base-url, not --daemon-url.',
+        '  open-websearch e2e-keygen [--json]',
+        '    Generate an X25519 server keypair for serverless E2E encryption.',
         '',
         'One-shot action commands:',
         '  open-websearch search <query> [--limit N] [--engine NAME] [--engines a,b] [--search-mode MODE] [--daemon-url URL] [--spawn] [--json]',
@@ -1253,6 +1255,32 @@ export async function runCli(
             }
             return 1;
         }
+    }
+
+    if (command === 'e2e-keygen') {
+        const { generateE2EKeyMaterial } = await import('../adapters/http/e2eEncryption.js');
+        const keys = generateE2EKeyMaterial();
+        const payload = {
+            OPEN_WEBSEARCH_E2E_PRIVATE_KEY: keys.privateKeyBase64,
+            serverPublicKey: keys.publicKeyBase64,
+            keyId: keys.keyId,
+            algorithm: 'X25519-AES-256-GCM'
+        };
+
+        if (rest.includes('--json')) {
+            io.stdout(JSON.stringify(payload, null, 2));
+        } else {
+            io.stdout('Serverless E2E encryption keypair generated.');
+            io.stdout('');
+            io.stdout('Set this in your deployment environment:');
+            io.stdout(`OPEN_WEBSEARCH_E2E_PRIVATE_KEY=${keys.privateKeyBase64}`);
+            io.stdout('');
+            io.stdout(`Server public key (keyId=${keys.keyId}):`);
+            io.stdout(keys.publicKeyBase64);
+            io.stdout('');
+            io.stdout('Clients discover the public key from /.well-known/open-websearch-e2e');
+        }
+        return 0;
     }
 
     if (command === 'status') {

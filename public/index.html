@@ -29,31 +29,26 @@
   <body>
     <h1>open-websearch serverless API</h1>
     <p>
-      This deployment exposes the open-websearch MCP server and REST API over HTTPS.
-      Set <code>OPEN_WEBSEARCH_API_KEY</code> in your platform environment and send it as
-      <code>Authorization: Bearer &lt;key&gt;</code> or <code>X-API-Key: &lt;key&gt;</code>.
+      This deployment exposes the open-websearch MCP server and REST API over HTTPS with
+      <strong>end-to-end encrypted payloads</strong> using X25519 ECDH and AES-256-GCM.
+      No API keys are required.
     </p>
+    <h2>Setup</h2>
+    <ol>
+      <li>Generate server keys: <code>open-websearch e2e-keygen</code></li>
+      <li>Set <code>OPEN_WEBSEARCH_E2E_PRIVATE_KEY</code> in your platform environment</li>
+      <li>Fetch the public key from <code>/.well-known/open-websearch-e2e</code></li>
+      <li>Send encrypted requests with <code>X-E2E-Client-Public-Key</code></li>
+    </ol>
     <h2>Endpoints</h2>
     <ul>
       <li><code>GET /health</code> — public liveness check</li>
-      <li><code>GET /status</code> — deployment status and capabilities</li>
-      <li><code>POST /search</code> — web search</li>
-      <li><code>POST /fetch-web</code> — fetch public page content</li>
-      <li><code>POST /fetch-github-readme</code> — fetch GitHub README</li>
-      <li><code>POST /fetch-csdn</code>, <code>/fetch-juejin</code>, <code>/fetch-linuxdo</code></li>
-      <li><code>POST /mcp</code> — MCP Streamable HTTP (stateless)</li>
+      <li><code>GET /.well-known/open-websearch-e2e</code> — server public key</li>
+      <li><code>GET /status</code> — encrypted deployment status</li>
+      <li><code>POST /search</code> — encrypted web search</li>
+      <li><code>POST /fetch-*</code> — encrypted fetch routes</li>
+      <li><code>POST /mcp</code> — encrypted MCP Streamable HTTP</li>
     </ul>
-    <h2>MCP client example</h2>
-    <pre>{
-  "mcpServers": {
-    "web-search": {
-      "url": "https://your-deployment.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}</pre>
     <p>See <code>docs/serverless-deployment.md</code> in the repository for full setup instructions.</p>
   </body>
 </html>

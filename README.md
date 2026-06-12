@@ -450,46 +450,35 @@ Then configure in your MCP client:
 
 ### Serverless Deployment (Vercel, Netlify, Cloudflare Workers)
 
-Host the full MCP server and REST API on serverless platforms with API key protection. This deployment exposes:
+Host the full MCP server and REST API on serverless platforms with **end-to-end encryption** (X25519 ECDH + AES-256-GCM). No API keys.
 
-- MCP Streamable HTTP at `/mcp` (stateless)
+This deployment exposes:
+
+- MCP Streamable HTTP at `/mcp` (stateless, encrypted payloads)
 - REST API at `/search`, `/fetch-web`, `/fetch-github-readme`, `/fetch-csdn`, `/fetch-juejin`, `/fetch-linuxdo`
-- `GET /health` (public) and `GET /status` (authenticated)
+- `GET /health` (public) and `GET /.well-known/open-websearch-e2e` (public key discovery)
 
 Quick start on Vercel:
 
 ```bash
 npm run build
+open-websearch e2e-keygen
+# Set OPEN_WEBSEARCH_E2E_PRIVATE_KEY in Vercel project settings
 npx vercel deploy --prod
 ```
 
-Set these environment variables in your platform dashboard:
-
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPEN_WEBSEARCH_API_KEY` | Yes | Shared secret for API and MCP access |
+| `OPEN_WEBSEARCH_E2E_PRIVATE_KEY` | Yes | Server X25519 private key from `e2e-keygen` |
 | `DEPLOYMENT_MODE` | Recommended | Set to `serverless` |
-| `ENABLE_CORS` | No | Defaults to `true` in deployment templates |
-| `DEFAULT_SEARCH_ENGINE` | No | Same as Docker/local options |
+| `REQUIRE_E2E_ENCRYPTION` | No | Defaults to `true` in deployment templates |
 
-MCP client example:
-
-```json
-{
-  "mcpServers": {
-    "web-search": {
-      "url": "https://your-project.vercel.app/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
+Clients discover the server public key from `/.well-known/open-websearch-e2e`, generate an ephemeral keypair per request, and send encrypted envelopes with `X-E2E-Client-Public-Key`.
 
 Serverless notes:
 - Playwright/browser fallback is not available; search runs in `request` mode only.
 - MCP runs in stateless mode (no in-memory sessions across requests).
+- HTTPS is required; payloads are encrypted at the application layer.
 - See [docs/serverless-deployment.md](docs/serverless-deployment.md) for Vercel, Netlify, and Cloudflare Workers setup.
 
 ## Usage Guide

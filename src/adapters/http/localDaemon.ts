@@ -54,7 +54,7 @@ export async function startLocalDaemon(
         version,
         baseUrl,
         deployment: 'local',
-        apiKeyRequired: false
+        e2eEncryptionRequired: false
     });
 
     app.get('/health', (_req, res) => {

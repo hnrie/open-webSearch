@@ -1,6 +1,12 @@
 import { createServerlessFetchHandler } from '../adapters/http/serverlessApp.js';
 import { createOpenWebSearchRuntime } from '../runtime/createRuntime.js';
 import { AppConfig } from '../config.js';
+import { generateE2EKeyMaterial } from '../adapters/http/e2eEncryption.js';
+import {
+    buildEncryptedRequestInit,
+    createE2EClientSession,
+    parseEncryptedResponse
+} from '../adapters/http/e2eClient.js';
 
 function assert(condition: unknown, message: string): asserts condition {
     if (!condition) {
@@ -62,126 +68,111 @@ function createStubRuntime() {
     });
 }
 
-async function request(
-    handler: (request: Request) => Promise<Response>,
-    path: string,
-    init: RequestInit & { apiKey?: string } = {}
-): Promise<Response> {
-    const headers = new Headers(init.headers);
-    if (init.apiKey) {
-        headers.set('Authorization', `Bearer ${init.apiKey}`);
-    }
-
-    return handler(new Request(`https://example.test${path}`, {
-        ...init,
-        headers
-    }));
+async function request(handler: (request: Request) => Promise<Response>, path: string, init: RequestInit = {}): Promise<Response> {
+    return handler(new Request(`https://example.test${path}`, init));
 }
 
-async function testHealthIsPublic(): Promise<void> {
+async function testHealthAndWellKnown(): Promise<void> {
+    const serverKeys = generateE2EKeyMaterial();
     const handler = createServerlessFetchHandler({
         version: 'test',
-        auth: { apiKey: 'secret', requireApiKey: true }
+        e2e: { requireE2E: true, serverKeys }
     });
 
-    const response = await request(handler, '/health');
-    assert(response.status === 200, 'health should be public');
-    const body = await response.json() as { status: string; data: { deployment: string } };
-    assert(body.status === 'ok', 'health envelope should be ok');
-    assert(body.data.deployment === 'serverless', 'health should report serverless deployment');
+    const health = await request(handler, '/health');
+    assert(health.status === 200, 'health should be public');
+
+    const wellKnown = await request(handler, '/.well-known/open-websearch-e2e');
+    assert(wellKnown.status === 200, 'well-known should expose server public key');
+    const wellKnownBody = await wellKnown.json() as { data: { serverPublicKey: string } };
+    assert(wellKnownBody.data.serverPublicKey === serverKeys.publicKeyBase64, 'well-known public key should match');
 }
 
-async function testProtectedRoutesRequireApiKey(): Promise<void> {
+async function testE2ERequiredWithoutEncryption(): Promise<void> {
+    const serverKeys = generateE2EKeyMaterial();
     const handler = createServerlessFetchHandler({
         version: 'test',
-        auth: { apiKey: 'secret', requireApiKey: true }
+        e2e: { requireE2E: true, serverKeys }
     });
 
     const response = await request(handler, '/status');
-    assert(response.status === 401, 'status without API key should be 401');
+    assert(response.status === 400, 'status without E2E headers should be rejected');
 }
 
-async function testStatusWithApiKey(): Promise<void> {
+async function testEncryptedStatusAndSearch(): Promise<void> {
+    const serverKeys = generateE2EKeyMaterial();
     const handler = createServerlessFetchHandler({
         version: 'test',
-        auth: { apiKey: 'secret', requireApiKey: true }
-    });
-
-    const response = await request(handler, '/status', { apiKey: 'secret' });
-    assert(response.status === 200, 'status with API key should succeed');
-    const body = await response.json() as {
-        status: string;
-        data: {
-            deployment: string;
-            configSummary: { searchMode: string; playwrightAvailable: boolean; apiKeyRequired: boolean };
-        };
-    };
-    assert(body.data.deployment === 'serverless', 'status should report serverless deployment');
-    assert(body.data.configSummary.searchMode === 'request', 'serverless should force request mode');
-    assert(body.data.configSummary.playwrightAvailable === false, 'playwright should be unavailable');
-    assert(body.data.configSummary.apiKeyRequired === true, 'status should report API key requirement');
-}
-
-async function testSearchRoute(): Promise<void> {
-    const handler = createServerlessFetchHandler({
-        version: 'test',
-        auth: { requireApiKey: false },
+        e2e: { requireE2E: true, serverKeys },
         runtime: createStubRuntime()
     });
+    const session = createE2EClientSession(serverKeys.publicKeyBase64);
 
-    const response = await request(handler, '/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: 'hello', limit: 2 })
-    });
+    const statusResponse = await request(
+        handler,
+        '/status',
+        buildEncryptedRequestInit(session, 'GET')
+    );
+    assert(statusResponse.status === 200, 'encrypted status should succeed');
+    const statusBody = await parseEncryptedResponse<{
+        status: string;
+        data: { configSummary: { e2eEncryptionRequired: boolean } };
+    }>(session, statusResponse);
+    assert(statusBody.data.configSummary.e2eEncryptionRequired === true, 'status should report E2E requirement');
 
-    assert(response.status === 200, 'search should succeed');
-    const body = await response.json() as { status: string; data: { results: unknown[] } };
-    assert(body.status === 'ok', 'search envelope should be ok');
-    assert(Array.isArray(body.data.results), 'search data.results should be an array');
-    assert(body.data.results.length > 0, 'search should return at least one result');
+    const searchResponse = await request(
+        handler,
+        '/search',
+        buildEncryptedRequestInit(session, 'POST', { query: 'hello', limit: 2 })
+    );
+    assert(searchResponse.status === 200, 'encrypted search should succeed');
+    const searchBody = await parseEncryptedResponse<{
+        status: string;
+        data: { results: unknown[] };
+    }>(session, searchResponse);
+    assert(searchBody.status === 'ok', 'search envelope should be ok');
+    assert(searchBody.data.results.length > 0, 'search should return results');
 }
 
-async function testMcpInitialize(): Promise<void> {
+async function testMcpInitializeEncrypted(): Promise<void> {
+    const serverKeys = generateE2EKeyMaterial();
     const handler = createServerlessFetchHandler({
         version: 'test',
-        auth: { apiKey: 'secret', requireApiKey: true }
+        e2e: { requireE2E: true, serverKeys }
     });
+    const session = createE2EClientSession(serverKeys.publicKeyBase64);
+
+    const mcpInit = buildEncryptedRequestInit(session, 'POST', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: {
+                name: 'test-client',
+                version: '1.0.0'
+            }
+        }
+    });
+    const mcpHeaders = new Headers(mcpInit.headers);
+    mcpHeaders.set('Accept', 'application/json, text/event-stream');
 
     const response = await request(handler, '/mcp', {
-        method: 'POST',
-        apiKey: 'secret',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/event-stream'
-        },
-        body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'initialize',
-            params: {
-                protocolVersion: '2024-11-05',
-                capabilities: {},
-                clientInfo: {
-                    name: 'test-client',
-                    version: '1.0.0'
-                }
-            }
-        })
+        ...mcpInit,
+        headers: mcpHeaders
     });
 
-    assert(response.status === 200, `MCP initialize should succeed, got ${response.status}`);
-    const contentType = response.headers.get('content-type') || '';
-    assert(
-        contentType.includes('application/json') || contentType.includes('text/event-stream'),
-        `unexpected MCP content type: ${contentType}`
-    );
+    assert(response.status === 200, `encrypted MCP initialize should succeed, got ${response.status}`);
+    const decrypted = await parseEncryptedResponse<{ jsonrpc: string }>(session, response);
+    assert(decrypted.jsonrpc === '2.0', 'MCP response should decrypt to JSON-RPC');
 }
 
 async function testCorsPreflight(): Promise<void> {
+    const serverKeys = generateE2EKeyMaterial();
     const handler = createServerlessFetchHandler({
         version: 'test',
-        auth: { requireApiKey: false }
+        e2e: { requireE2E: true, serverKeys }
     });
 
     const response = await request(handler, '/search', {
@@ -197,11 +188,10 @@ async function testCorsPreflight(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-    await testHealthIsPublic();
-    await testProtectedRoutesRequireApiKey();
-    await testStatusWithApiKey();
-    await testSearchRoute();
-    await testMcpInitialize();
+    await testHealthAndWellKnown();
+    await testE2ERequiredWithoutEncryption();
+    await testEncryptedStatusAndSearch();
+    await testMcpInitializeEncrypted();
     await testCorsPreflight();
     console.log('test-serverless-handler: all tests passed');
 }
