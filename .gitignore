@@ -4,4 +4,4 @@ build/
 .env*
 .vscode
 .github/copilot-instructions.md
-.github/prompts
+.github/promptse2e-encryption-search.json
