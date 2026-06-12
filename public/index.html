@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>open-websearch serverless API</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+        line-height: 1.5;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        max-width: 52rem;
+      }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      pre {
+        overflow-x: auto;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        background: rgba(127, 127, 127, 0.12);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>open-websearch serverless API</h1>
+    <p>
+      This deployment exposes the open-websearch MCP server and REST API over HTTPS with
+      <strong>end-to-end encrypted payloads</strong> using X25519 ECDH and AES-256-GCM.
+      No API keys are required.
+    </p>
+    <h2>Setup</h2>
+    <ol>
+      <li>Generate server keys: <code>open-websearch e2e-keygen</code></li>
+      <li>Set <code>OPEN_WEBSEARCH_E2E_PRIVATE_KEY</code> in your platform environment</li>
+      <li>Fetch the public key from <code>/.well-known/open-websearch-e2e</code></li>
+      <li>Send encrypted requests with <code>X-E2E-Client-Public-Key</code></li>
+    </ol>
+    <h2>Endpoints</h2>
+    <ul>
+      <li><code>GET /health</code> — public liveness check</li>
+      <li><code>GET /.well-known/open-websearch-e2e</code> — server public key</li>
+      <li><code>GET /status</code> — encrypted deployment status</li>
+      <li><code>POST /search</code> — encrypted web search</li>
+      <li><code>POST /fetch-*</code> — encrypted fetch routes</li>
+      <li><code>POST /mcp</code> — encrypted MCP Streamable HTTP</li>
+    </ul>
+    <p>See <code>docs/serverless-deployment.md</code> in the repository for full setup instructions.</p>
+  </body>
+</html>

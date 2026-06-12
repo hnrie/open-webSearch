@@ -1,0 +1,10 @@
+name = "open-websearch"
+main = "build/serverless/cloudflare.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+DEPLOYMENT_MODE = "serverless"
+MODE = "http"
+ENABLE_CORS = "true"
+SEARCH_MODE = "request"
