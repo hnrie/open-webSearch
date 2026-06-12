@@ -48,7 +48,7 @@ Encrypted envelope:
 }
 ```
 
-HTTPS is required in production. Plaintext request bodies are rejected when `REQUIRE_E2E_ENCRYPTION=true`.
+HTTPS is required in production. Plaintext request bodies are allowed by default; set `REQUIRE_E2E_ENCRYPTION=true` to reject unencrypted payloads.
 
 ## Generate server keys
 
@@ -62,7 +62,7 @@ Set the printed private key in your deployment environment:
 ```bash
 OPEN_WEBSEARCH_E2E_PRIVATE_KEY=<pkcs8-base64-private-key>
 DEPLOYMENT_MODE=serverless
-REQUIRE_E2E_ENCRYPTION=true
+# Optional: REQUIRE_E2E_ENCRYPTION=true
 ```
 
 Never commit the private key to git.
@@ -124,7 +124,7 @@ npx wrangler deploy
 |----------|----------|---------|-------------|
 | `OPEN_WEBSEARCH_E2E_PRIVATE_KEY` | Yes (production) | empty | Server X25519 PKCS8 private key (base64) |
 | `DEPLOYMENT_MODE` | Recommended | `serverless` in templates | Enables serverless defaults |
-| `REQUIRE_E2E_ENCRYPTION` | No | `true` when `DEPLOYMENT_MODE=serverless` | Reject plaintext payloads |
+| `REQUIRE_E2E_ENCRYPTION` | No | `false` | Set to `true` to reject plaintext payloads |
 | `ENABLE_CORS` | No | `true` in templates | Add CORS headers |
 | `CORS_ORIGIN` | No | `*` | Allowed origin for CORS |
 | `DEFAULT_SEARCH_ENGINE` | No | `bing` | Default engine |

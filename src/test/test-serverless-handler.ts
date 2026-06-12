@@ -88,6 +88,20 @@ async function testHealthAndWellKnown(): Promise<void> {
     assert(wellKnownBody.data.serverPublicKey === serverKeys.publicKeyBase64, 'well-known public key should match');
 }
 
+async function testPlaintextAllowedByDefault(): Promise<void> {
+    const handler = createServerlessFetchHandler({
+        version: 'test',
+        e2e: { requireE2E: false }
+    });
+
+    const response = await request(handler, '/status');
+    assert(response.status === 200, 'status without E2E should succeed when E2E is off');
+    const body = await response.json() as {
+        data: { configSummary: { e2eEncryptionRequired: boolean } };
+    };
+    assert(body.data.configSummary.e2eEncryptionRequired === false, 'status should report E2E as optional');
+}
+
 async function testE2ERequiredWithoutEncryption(): Promise<void> {
     const serverKeys = generateE2EKeyMaterial();
     const handler = createServerlessFetchHandler({
@@ -189,6 +203,7 @@ async function testCorsPreflight(): Promise<void> {
 
 async function main(): Promise<void> {
     await testHealthAndWellKnown();
+    await testPlaintextAllowedByDefault();
     await testE2ERequiredWithoutEncryption();
     await testEncryptedStatusAndSearch();
     await testMcpInitializeEncrypted();

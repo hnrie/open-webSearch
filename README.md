@@ -471,7 +471,7 @@ npx vercel deploy --prod
 |----------|----------|-------------|
 | `OPEN_WEBSEARCH_E2E_PRIVATE_KEY` | Yes | Server X25519 private key from `e2e-keygen` |
 | `DEPLOYMENT_MODE` | Recommended | Set to `serverless` |
-| `REQUIRE_E2E_ENCRYPTION` | No | Defaults to `true` in deployment templates |
+| `REQUIRE_E2E_ENCRYPTION` | No | Set to `true` to require encrypted payloads (off by default) |
 
 Clients discover the server public key from `/.well-known/open-websearch-e2e`, generate an ephemeral keypair per request, and send encrypted envelopes with `X-E2E-Client-Public-Key`.
 

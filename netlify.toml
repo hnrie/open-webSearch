@@ -17,11 +17,9 @@
   MODE = "http"
   ENABLE_CORS = "true"
   SEARCH_MODE = "request"
-  REQUIRE_E2E_ENCRYPTION = "true"
 
 [context.deploy-preview.environment]
   DEPLOYMENT_MODE = "serverless"
   MODE = "http"
   ENABLE_CORS = "true"
   SEARCH_MODE = "request"
-  REQUIRE_E2E_ENCRYPTION = "true"

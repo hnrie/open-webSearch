@@ -153,10 +153,7 @@ export function getClientPublicKeyHeader(headers: Headers): string | undefined {
 }
 
 export function readE2ESecurityOptionsFromEnv(): E2ESecurityOptions {
-    const deploymentMode = process.env.DEPLOYMENT_MODE?.trim().toLowerCase();
-    const isServerless = deploymentMode === 'serverless';
-    const requireE2E = process.env.REQUIRE_E2E_ENCRYPTION === 'true'
-        || (isServerless && process.env.REQUIRE_E2E_ENCRYPTION !== 'false');
+    const requireE2E = process.env.REQUIRE_E2E_ENCRYPTION === 'true';
     const privateKeyBase64 = process.env.OPEN_WEBSEARCH_E2E_PRIVATE_KEY?.trim()
         || process.env.E2E_PRIVATE_KEY?.trim();
 
